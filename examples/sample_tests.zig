@@ -90,7 +90,12 @@ fn testWindowsOnly(a: std.mem.Allocator, _: void) ts.TestResult {
 }
 
 fn testSkipInCi(a: std.mem.Allocator, _: void) ts.TestResult {
-    const is_ci = std.posix.getenv("CI") != null;
+    // Cross-platform env var check
+    const is_ci = blk: {
+        const val = std.process.getEnvVarOwned(a, "CI") catch break :blk false;
+        a.free(val);
+        break :blk true;
+    };
 
     const skip_result = ts.skipIf(is_ci, "too slow for CI");
     if (skip_result.isSkip()) return skip_result;
