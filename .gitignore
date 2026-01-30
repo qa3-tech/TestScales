@@ -1,0 +1,22 @@
+# Zig build artifacts
+zig-out/
+zig-cache/
+.zig-cache/
+
+# Test output
+results.xml
+*.xml
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Distribution artifacts
+dist/
+*.tar.xz
+*.tar.gz
+*.zip
