@@ -241,7 +241,7 @@ const FileEnv = struct {
 
 fn fileSetup(allocator: std.mem.Allocator) ?FileEnv {
     const timestamp = std.time.timestamp();
-    const temp_dir = std.fmt.allocPrint(allocator, "/tmp/testscales_{d}", .{timestamp}) catch return null;
+    const temp_dir = std.fmt.allocPrint(allocator, "testscales_{d}", .{timestamp}) catch return null;
 
     std.fs.cwd().makeDir(temp_dir) catch |err| {
         if (err != error.PathAlreadyExists) return null;
