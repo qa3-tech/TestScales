@@ -1,0 +1,195 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  update-version:
+    runs-on: ubuntu-latest
+    # Only run on main branch tags
+    if: github.ref_type == 'tag'
+    permissions:
+      contents: write
+
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Releasing version: ${VERSION}"
+
+      - name: Update build.zig.zon version
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          sed -i "s/\.version = \".*\"/\.version = \"${VERSION}\"/" build.zig.zon
+          cat build.zig.zon
+
+      - name: Commit version update
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add build.zig.zon
+          git diff --cached --quiet || git commit -m "chore: bump version to ${VERSION}"
+          git push origin main
+
+      - name: Update tag to include version bump
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          git tag -f ${VERSION}
+          git push origin ${VERSION} --force
+
+  build:
+    needs: update-version
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux
+          - os: ubuntu-latest
+            target: aarch64-linux
+          - os: macos-latest
+            target: x86_64-macos
+          - os: macos-latest
+            target: aarch64-macos
+          - os: windows-latest
+            target: x86_64-windows
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.update-version.outputs.version }}
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Run tests
+        run: zig build test
+
+      - name: Package
+        shell: bash
+        run: |
+          VERSION=${{ needs.update-version.outputs.version }}
+          mkdir -p dist
+          cp -r src examples dist/
+          cp README.md LICENSE build.zig build.zig.zon dist/
+          tar -cJf testscales-${VERSION}-${{ matrix.target }}.tar.xz -C dist .
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: testscales-${{ needs.update-version.outputs.version }}-${{ matrix.target }}
+          path: testscales-*.tar.xz
+          retention-days: 7
+
+  release:
+    needs: [update-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.update-version.outputs.version }}
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Compute package hash
+        id: hash
+        run: |
+          VERSION=${{ needs.update-version.outputs.version }}
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/${VERSION}.tar.gz"
+
+          # Wait for GitHub to update the tag archive
+          sleep 10
+
+          # Fetch and compute hash
+          HASH=$(zig fetch "${URL}" 2>&1 | tail -1 || echo "")
+
+          # Validate hash (should be 64 hex chars)
+          if ! echo "$HASH" | grep -qE '^[a-f0-9]{64}$'; then
+            echo "Warning: Could not compute hash automatically"
+            HASH="<run: zig fetch ${URL}>"
+          fi
+
+          echo "HASH=${HASH}" >> $GITHUB_OUTPUT
+          echo "Package hash: ${HASH}"
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=${{ needs.update-version.outputs.version }}
+          HASH=${{ steps.hash.outputs.HASH }}
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/${VERSION}.tar.gz"
+
+          cat > release_notes.md << 'EOF'
+          ## Installation
+
+          ### Zig Package Manager
+
+          Add to your `build.zig.zon`:
+
+          ```zig
+          .dependencies = .{
+              .testscales = .{
+          EOF
+
+          echo "            .url = \"${URL}\"," >> release_notes.md
+          echo "            .hash = \"${HASH}\"," >> release_notes.md
+
+          cat >> release_notes.md << 'EOF'
+              },
+          },
+          ```
+
+          Then in your `build.zig`:
+
+          ```zig
+          const testscales = b.dependency("testscales", .{
+              .target = target,
+              .optimize = optimize,
+          });
+          exe.root_module.addImport("testscales", testscales.module("testscales"));
+          ```
+
+          See [README](https://github.com/qa3-tech/testscales#installation) for more options.
+          EOF
+
+          # Flatten artifacts directory structure
+          find artifacts -type f -name "*.tar.xz" -exec mv {} . \;
+
+          gh release create ${VERSION} \
+            --title "TestScales ${VERSION}" \
+            --notes-file release_notes.md \
+            *.tar.xz
