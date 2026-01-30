@@ -245,6 +245,11 @@ fn listTests(suites: []const ErasedSuite) void {
 }
 
 pub fn run(allocator: std.mem.Allocator, suites: []const ErasedSuite, args: []const []const u8) u8 {
+    // Use arena allocator for all test run allocations - automatically freed at end
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
     const opts = parseArgs(args);
 
     if (opts.help) {
@@ -258,8 +263,7 @@ pub fn run(allocator: std.mem.Allocator, suites: []const ErasedSuite, args: []co
     }
 
     // Filter suites
-    var filtered = std.ArrayList(ErasedSuite).init(allocator);
-    defer filtered.deinit();
+    var filtered = std.ArrayList(ErasedSuite).init(arena_alloc);
 
     for (suites) |suite| {
         var include = true;
@@ -278,7 +282,7 @@ pub fn run(allocator: std.mem.Allocator, suites: []const ErasedSuite, args: []co
 
     // Run
     var out = output.Output.init(true);
-    const run_result = runAll(allocator, filtered.items);
+    const run_result = runAll(arena_alloc, filtered.items);
 
     // Print results
     for (run_result.outcomes) |suite_outcome| {
