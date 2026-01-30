@@ -8,7 +8,7 @@ pub const SuiteOutcome = output.SuiteOutcome;
 pub const RunSummary = output.RunSummary;
 
 // ============================================================
-// Core Types
+// Core Types (Public)
 // ============================================================
 
 pub fn TestFn(comptime Env: type) type {
@@ -48,6 +48,7 @@ pub fn Suite(comptime Env: type) type {
         setup: ?SetupFn(Env) = null,
         teardown: ?TeardownFn(Env) = null,
 
+        pub const EnvType = Env;
         const Self = @This();
 
         pub fn init(name: []const u8, tests: []const Test(Env)) Self {
@@ -61,22 +62,20 @@ pub fn Suite(comptime Env: type) type {
 }
 
 // ============================================================
-// Type-Erased Suite
+// Internal: Suite Runner (type-erased wrapper)
 // ============================================================
 
-pub const ErasedSuite = struct {
+const SuiteRunner = struct {
     name: []const u8,
     test_count: usize,
     runFn: *const fn (std.mem.Allocator, ?[]const u8) SuiteOutcome,
 
-    pub fn run(self: ErasedSuite, allocator: std.mem.Allocator, filter: ?[]const u8) SuiteOutcome {
+    fn execute(self: SuiteRunner, allocator: std.mem.Allocator, filter: ?[]const u8) SuiteOutcome {
         return self.runFn(allocator, filter);
     }
 };
 
-/// Create a type-erased suite from a comptime-known suite.
-/// Usage: `erased(void, &my_suite)` or `my_suite.erased()`
-pub fn erased(comptime Env: type, comptime suite: *const Suite(Env)) ErasedSuite {
+fn createRunner(comptime Env: type, comptime suite: *const Suite(Env)) SuiteRunner {
     const S = struct {
         fn run(allocator: std.mem.Allocator, test_filter: ?[]const u8) SuiteOutcome {
             return runSuiteImpl(Env, suite.*, allocator, test_filter);
@@ -90,7 +89,7 @@ pub fn erased(comptime Env: type, comptime suite: *const Suite(Env)) ErasedSuite
 }
 
 // ============================================================
-// Runners
+// Internal: Suite Execution
 // ============================================================
 
 fn runSuiteImpl(comptime Env: type, suite: Suite(Env), allocator: std.mem.Allocator, test_filter: ?[]const u8) SuiteOutcome {
@@ -156,15 +155,15 @@ fn runSuiteImpl(comptime Env: type, suite: Suite(Env), allocator: std.mem.Alloca
     };
 }
 
-pub fn runAll(allocator: std.mem.Allocator, suites: []const ErasedSuite) struct { summary: RunSummary, outcomes: []const SuiteOutcome } {
+fn runAllRunners(allocator: std.mem.Allocator, runners: []const SuiteRunner) struct { summary: RunSummary, outcomes: []const SuiteOutcome } {
     var timer = std.time.Timer.start() catch return .{ .summary = .{}, .outcomes = &[_]SuiteOutcome{} };
     var summary = RunSummary{};
     var outcomes = std.ArrayList(SuiteOutcome).init(allocator);
 
-    for (suites) |suite| {
-        const outcome = suite.run(allocator, null);
+    for (runners) |runner| {
+        const outcome = runner.execute(allocator, null);
         if (outcome.setup_failed) {
-            summary.errored += suite.test_count;
+            summary.errored += runner.test_count;
         } else {
             summary.passed += outcome.passed();
             summary.failed += outcome.failed();
@@ -237,14 +236,37 @@ fn printHelp(prog: []const u8) void {
     , .{prog}) catch {};
 }
 
-fn listTests(suites: []const ErasedSuite) void {
+fn listRunners(runners: []const SuiteRunner) void {
     const stdout = std.io.getStdOut().writer();
-    for (suites) |suite| {
-        stdout.print("{s}: ({d} tests)\n", .{ suite.name, suite.test_count }) catch {};
+    for (runners) |runner| {
+        stdout.print("{s}: ({d} tests)\n", .{ runner.name, runner.test_count }) catch {};
     }
 }
 
-pub fn run(allocator: std.mem.Allocator, suites: []const ErasedSuite, args: []const []const u8) u8 {
+// ============================================================
+// Public API: run()
+// ============================================================
+
+/// Run test suites and return exit code.
+/// Accepts a tuple of suite pointers: .{ &math_suite, &file_suite }
+pub fn run(allocator: std.mem.Allocator, comptime suites: anytype, args: []const []const u8) u8 {
+    // Build runners array at comptime
+    const runners = comptime blk: {
+        const fields = @typeInfo(@TypeOf(suites)).Struct.fields;
+        var arr: [fields.len]SuiteRunner = undefined;
+        for (fields, 0..) |field, i| {
+            const suite_ptr = @field(suites, field.name);
+            const SuiteType = @TypeOf(suite_ptr.*);
+            const Env = SuiteType.EnvType;
+            arr[i] = createRunner(Env, suite_ptr);
+        }
+        break :blk arr;
+    };
+
+    return runImpl(allocator, &runners, args);
+}
+
+fn runImpl(allocator: std.mem.Allocator, runners: []const SuiteRunner, args: []const []const u8) u8 {
     // Use arena allocator for all test run allocations - automatically freed at end
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -258,20 +280,20 @@ pub fn run(allocator: std.mem.Allocator, suites: []const ErasedSuite, args: []co
     }
 
     if (opts.list) {
-        listTests(suites);
+        listRunners(runners);
         return 0;
     }
 
     // Filter suites
-    var filtered = std.ArrayList(ErasedSuite).init(arena_alloc);
+    var filtered = std.ArrayList(SuiteRunner).init(arena_alloc);
 
-    for (suites) |suite| {
+    for (runners) |runner| {
         var include = true;
         if (opts.suite_filter) |sf| {
-            include = std.mem.indexOf(u8, suite.name, sf) != null;
+            include = std.mem.indexOf(u8, runner.name, sf) != null;
         }
         if (include) {
-            filtered.append(suite) catch continue;
+            filtered.append(runner) catch continue;
         }
     }
 
@@ -282,7 +304,7 @@ pub fn run(allocator: std.mem.Allocator, suites: []const ErasedSuite, args: []co
 
     // Run
     var out = output.Output.init(true);
-    const run_result = runAll(arena_alloc, filtered.items);
+    const run_result = runAllRunners(arena_alloc, filtered.items);
 
     // Print results
     for (run_result.outcomes) |suite_outcome| {

@@ -322,15 +322,16 @@ pub fn main() u8 {
     const args = std.process.argsAlloc(allocator) catch return 1;
     defer std.process.argsFree(allocator, args);
 
-    return ts.run(allocator, &.{
-        comptime ts.erased(void, &math_suite),
-        comptime ts.erased(void, &validation_suite),
-        comptime ts.erased(void, &skip_suite),
-        comptime ts.erased(void, &collection_suite),
-        comptime ts.erased(void, &numeric_suite),
-        comptime ts.erased(void, &string_suite),
-        comptime ts.erased(void, &nil_suite),
-        comptime ts.erased(void, &data_suite),
-        comptime ts.erased(FileEnv, &file_suite),
+    // Just pass suite pointers - type erasure is handled internally
+    return ts.run(allocator, .{
+        &math_suite,
+        &validation_suite,
+        &skip_suite,
+        &collection_suite,
+        &numeric_suite,
+        &string_suite,
+        &nil_suite,
+        &data_suite,
+        &file_suite,
     }, args);
 }

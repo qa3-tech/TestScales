@@ -79,7 +79,6 @@ pub const Suite = runner.Suite;
 pub const TestFn = runner.TestFn;
 pub const SetupFn = runner.SetupFn;
 pub const TeardownFn = runner.TeardownFn;
-pub const ErasedSuite = runner.ErasedSuite;
 pub const TestOutcome = runner.TestOutcome;
 pub const SuiteOutcome = runner.SuiteOutcome;
 pub const RunSummary = runner.RunSummary;
@@ -88,8 +87,6 @@ pub const RunSummary = runner.RunSummary;
 // Runner Functions
 // ============================================================
 
-pub const erased = runner.erased;
-pub const runAll = runner.runAll;
 pub const run = runner.run;
 
 // ============================================================
